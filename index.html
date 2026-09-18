@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0e0e10">
+<title>Bushwick · Control Panel</title>
+
+<style>
+/* ───────────────────────────────────────────────────────────────
+   TOKENS
+   JS rewrites --ink / --glass-* / --sun / --moon continuously as the
+   sky brightens, darkens and changes weather. Don't hard-code colours
+   in the cards; use these variables so text stays legible.
+   ─────────────────────────────────────────────────────────────── */
+:root{
+  --ink: 255 255 255;               /* text colour (rgb triple)              */
+  --shade: 0 0 0;                   /* text-shadow colour                    */
+  --glass-hi: rgba(255,255,255,.16);
+  --glass-lo: rgba(14,24,46,.22);
+  --bright: .95;
+  --sun: 255 214 120;
+  --moon: 214 228 255;
+  --moon-lit: 250 247 236;
+  --moon-dark: 255 255 255;
+  --moon-dark-a: .14;
+
+  --base: 14 14 16;                 /* soft black the weather fades into    */
+  --offwhite: 240 237 231;          /* floating time / date / high-low      */
+
+  --pad: max(22px, 3.4vmin);
+  --radius: clamp(26px, 4.2vmin, 44px);
+  --font: -apple-system, "SF Pro Display", "SF Pro Text", BlinkMacSystemFont, "Helvetica Neue", Inter, system-ui, "Segoe UI", sans-serif;
+}
+
+*{ box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+html,body{ height:100%; overflow:hidden; background:rgb(var(--base)); overscroll-behavior:none; }
+body{
+  position:fixed; inset:0; width:100%;
+  font-family:var(--font);
+  color:rgb(var(--ink));
+  -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+  -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+  touch-action:none;
+}
+
+/* ── sky layers ─────────────────────────────────────────────── */
+canvas{ position:fixed; inset:0; width:100%; height:100%; display:block; }
+#sky{ z-index:0; opacity:0; transition:opacity 1.8s ease; }
+body.ready #sky{ opacity:1; }
+#precip{ z-index:1; pointer-events:none; }
+
+/* ── bottom dock ────────────────────────────────────────────── */
+.dock{
+  position:fixed; left:0; right:0; bottom:0; z-index:5;
+  display:flex; justify-content:flex-start; align-items:flex-end; gap:calc(var(--pad) * 1.1);
+  padding:var(--pad);
+  padding-left:calc(var(--pad) + env(safe-area-inset-left));
+  padding-right:calc(var(--pad) + env(safe-area-inset-right));
+  padding-bottom:calc(var(--pad) + env(safe-area-inset-bottom));
+  pointer-events:none;
+}
+
+/* ───────────────────────────────────────────────────────────────
+   LIQUID GLASS
+   Layers: frosted blur + saturation boost, a tinted body, a bright
+   specular hairline that fades around the rim, an inner highlight at
+   the top-left, and a slow light sweep across the surface.
+   ─────────────────────────────────────────────────────────────── */
+.glass{
+  position:relative; isolation:isolate; pointer-events:auto;
+  border-radius:var(--radius);
+  background:linear-gradient(150deg, var(--glass-hi), var(--glass-lo));
+  -webkit-backdrop-filter:blur(26px) saturate(190%) brightness(var(--bright));
+          backdrop-filter:blur(26px) saturate(190%) brightness(var(--bright));
+  box-shadow:
+    inset 0 1.5px 1px rgb(255 255 255 / .55),
+    inset 0 -1px 1px rgb(255 255 255 / .16),
+    inset 1px 0 1px rgb(255 255 255 / .18),
+    inset 0 0 34px rgb(255 255 255 / .07),
+    0 0 0 .5px rgb(0 0 0 / .05),
+    0 22px 60px -18px rgb(0 0 0 / .38),
+    0 4px 14px -4px rgb(0 0 0 / .12);
+  color:rgb(var(--ink));
+}
+.glass > *{ position:relative; z-index:1; }
+
+/* rim light */
+.glass::before{
+  content:""; position:absolute; inset:0; border-radius:inherit; padding:1.25px; pointer-events:none;
+  background:linear-gradient(140deg,
+    rgb(255 255 255 / .85) 0%, rgb(255 255 255 / .12) 28%,
+    rgb(255 255 255 / 0) 52%, rgb(255 255 255 / .16) 78%, rgb(255 255 255 / .55) 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;
+          mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask-composite:exclude;
+}
+/* top-left highlight + drifting sheen */
+.glass::after{
+  content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; z-index:2;
+  background:
+    radial-gradient(90% 60% at 16% -10%, rgb(255 255 255 / .26), transparent 62%),
+    linear-gradient(112deg, transparent 32%, rgb(255 255 255 / .12) 46%, rgb(255 255 255 / .03) 54%, transparent 68%);
+  background-size:100% 100%, 280% 100%;
+  background-position:0 0, 0% 0;
+  animation:sheen 26s ease-in-out infinite alternate;
+}
+@keyframes sheen{ to{ background-position:0 0, 100% 0; } }
+@media (prefers-reduced-motion:reduce){ .glass::after{ animation:none; } }
+
+/* ── left: floating time, date and high/low — no card, off-white, left-aligned ── */
+.clock{
+  text-align:left; color:rgb(var(--offwhite));
+  text-shadow:0 0 48px rgb(255 255 255 / .07);
+}
+.time{
+  display:flex; align-items:baseline; justify-content:flex-start; gap:.16em;
+  margin-left:-.045em;                                /* optical alignment with the text below */
+  font-size:min(19vmin, 10.4vw); line-height:.92; font-weight:200; letter-spacing:-.045em;
+  font-variant-numeric:tabular-nums; white-space:nowrap;
+  transform:scaleY(1.1); transform-origin:left bottom;   /* slight vertical stretch */
+}
+.time .ap{ font-size:.25em; font-weight:400; letter-spacing:.04em; opacity:.6; text-transform:lowercase; }
+.dow{
+  margin-top:.5em; white-space:nowrap;
+  font-size:clamp(22px, 4vmin, 44px); font-weight:400; letter-spacing:-.005em; opacity:.9;
+}
+.dmy{
+  margin-top:.12em; white-space:nowrap;
+  font-size:clamp(17px, 2.9vmin, 31px); font-weight:300; letter-spacing:.005em; opacity:.72;
+}
+.hl{
+  display:flex; justify-content:flex-start; gap:1.4em; margin-top:.8em;
+  font-size:clamp(16px, 2.6vmin, 27px); font-weight:300; letter-spacing:.01em; opacity:.6;
+}
+.hl i{ font-style:normal; font-weight:400; opacity:.7; margin-right:.3em; }
+.hl b{ font-weight:400; font-variant-numeric:tabular-nums; }
+/* → more rows go in this block: copy .hl, or add your own element below it */
+
+/* ── middle: next L trains + trip to 6 Av ──────────────────── */
+.transit{
+  color:rgb(var(--offwhite)); white-space:nowrap;
+  text-shadow:0 0 48px rgb(255 255 255 / .07);
+}
+.t-head{
+  font-size:clamp(15px, 2.4vmin, 26px); font-weight:400; letter-spacing:-.005em; opacity:.9;
+}
+.t-head i{ font-style:normal; font-weight:300; opacity:.6; margin-left:.5em; }
+.t-times{
+  display:flex; align-items:baseline; gap:.55em; margin-top:.08em;
+  font-size:clamp(26px, 4.8vmin, 54px); font-weight:200; letter-spacing:-.03em; line-height:1.1;
+  font-variant-numeric:tabular-nums;
+}
+.t-times b{ font-weight:200; }
+.t-times i{ font-style:normal; font-size:.36em; font-weight:400; opacity:.6; margin-left:.2em; }
+.t-trip{
+  margin-top:.5em;
+  font-size:clamp(15px, 2.4vmin, 26px); font-weight:300; letter-spacing:.005em; opacity:.9;
+}
+.t-trip b{ font-weight:400; font-variant-numeric:tabular-nums; }
+.t-sub{
+  margin-top:.3em;
+  font-size:clamp(14px, 2.2vmin, 24px); font-weight:300; letter-spacing:.01em; opacity:.6;
+  font-variant-numeric:tabular-nums;
+}
+.t-sub b{ font-weight:400; }
+.t-sub small{ font-size:.72em; margin-left:.12em; }
+.transit.off .t-times{ font-size:clamp(15px, 2.4vmin, 26px); font-weight:300; opacity:.6; letter-spacing:0; }
+
+/* ── right: sun wave, no box ───────────────────────────────── */
+.arc{
+  width:min(36vw, 560px); min-width:260px; flex:0 1 auto; margin-left:auto; pointer-events:auto;
+  color:rgb(var(--offwhite));
+  text-shadow:0 1px 18px rgb(0 0 0 / .45), 0 0 2px rgb(0 0 0 / .25);
+}
+#arc{ display:block; width:100%; height:auto; overflow:visible; filter:drop-shadow(0 1px 6px rgb(0 0 0 / .35)); }
+#arc .wave{ fill:none; stroke:url(#waveG); stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+#arc .ev-dot{ fill:rgb(var(--offwhite) / .9); }
+#arc .nowline{ stroke:rgb(var(--offwhite) / .16); stroke-width:1; stroke-dasharray:1 4; stroke-linecap:round; }
+#arc .glow-s{ fill:rgb(var(--sun) / .75); }
+#arc .s-core{ fill:rgb(var(--sun)); stroke:rgb(255 255 255 / .8); stroke-width:1.2; }
+#arc .glow-m{ fill:rgb(var(--moon) / .5); }
+#arc .m-unlit{ fill:rgb(255 255 255 / .16); }
+#arc .m-lit{ fill:rgb(var(--moon-lit)); }
+#arc .m-rim{ fill:none; stroke:rgb(var(--moon) / .7); stroke-width:1; }
+#arc .mk-sun,#arc .mk-moon{ transition:opacity 1.2s ease; }
+
+.arc-foot{
+  display:flex; justify-content:space-between; align-items:baseline; gap:1.2em;
+  margin-top:.3em; padding:0 .2em; gap:1em;
+  font-size:clamp(12px, 1.65vmin, 16px); white-space:nowrap;
+}
+.ev{ display:inline-flex; align-items:baseline; gap:.45em; font-variant-numeric:tabular-nums; }
+.ev i{ font-style:normal; font-weight:300; opacity:.62; }
+.ev b{ font-weight:400; }
+.ev small{ font-size:.72em; opacity:.6; margin-left:.35em; }
+
+/* portrait iPad / narrow windows */
+@media (max-aspect-ratio:1/1){                        /* portrait: wave on its own row above */
+  .dock{ flex-wrap:wrap; row-gap:calc(var(--pad) * 1.2); }
+  .arc{ order:-1; width:100%; margin-left:0; }
+  .time{ font-size:min(16vmin, 11vw); }
+}
+</style>
+</head>
+
+<body>
+  <canvas id="sky" aria-hidden="true"></canvas>
+  <canvas id="precip" aria-hidden="true"></canvas>
+
+  <main class="dock">
+
+    <!-- ░░ LEFT · floating time, date, high/low ░░ -->
+    <section class="clock" aria-label="Time, date and today's temperature range">
+      <div class="time"><span id="hm">--:--</span><span id="ap" class="ap"></span></div>
+      <div class="dow" id="dow"></div>
+      <div class="dmy" id="dmy"></div>
+      <div class="hl">
+        <span><i>H:</i><b id="hi">--°</b></span>
+        <span><i>L:</i><b id="lo">--°</b></span>
+      </div>
+      <!-- ADD MORE ROWS HERE (wind, humidity, calendar, lights…) -->
+    </section>
+
+    <!-- ░░ MIDDLE · next Manhattan-bound L trains + door-to-6 Av trip ░░ -->
+    <section class="transit" id="transit" aria-label="Next Manhattan-bound L trains and trip time to 6 Av">
+      <div class="t-head">L to Manhattan<i id="tStation">Wilson Av</i></div>
+      <div class="t-times" id="tTimes"><b>—</b></div>
+      <div class="t-trip">6 Av in <b id="tripMin">—</b></div>
+      <div class="t-sub" id="tripSub"></div>
+    </section>
+
+    <!-- ░░ RIGHT · sun wave + next sunrise / sunset + moon phase ░░ -->
+    <section class="arc" id="arcCard" aria-label="Sun's path today, next sunrise and sunset, moon phase">
+      <svg id="arc" viewBox="0 0 560 124" role="img" aria-label="The sun's path across today">
+        <defs>
+          <linearGradient id="waveG" gradientUnits="userSpaceOnUse" x1="0" y1="8" x2="0" y2="116">
+            <stop offset="0"   style="stop-color:rgb(var(--sun))"/>
+            <stop offset=".18" style="stop-color:rgb(var(--sun))"/>
+            <stop offset=".82" style="stop-color:rgb(var(--moon))"/>
+            <stop offset="1"   style="stop-color:rgb(var(--moon))"/>
+          </linearGradient>
+          <filter id="blur" x="-150%" y="-150%" width="400%" height="400%"><feGaussianBlur stdDeviation="5"/></filter>
+        </defs>
+        <path id="wave" class="wave"/>
+        <line id="nowLine" class="nowline" x1="0" x2="0" y1="8" y2="116"/>
+        <g id="evDots"></g>
+        <g id="mk">
+          <g class="mk-moon" id="mkMoon">
+            <circle class="glow-m" r="15" filter="url(#blur)"/>
+            <circle class="m-unlit" r="8.2"/>
+            <path id="moonLit" class="m-lit"/>
+            <circle class="m-rim" r="8.2"/>
+          </g>
+          <g class="mk-sun" id="mkSun">
+            <circle class="glow-s" r="16" filter="url(#blur)"/>
+            <circle class="s-core" r="6.6"/>
+          </g>
+        </g>
+      </svg>
+      <div class="arc-foot">
+        <span class="ev"><i id="ev1Name">Sunset</i><b id="ev1"></b></span>
+        <span class="ev"><i id="ev2Name">Sunrise</i><b id="ev2"></b></span>
+        <span class="ev"><i>Moon</i><b id="moonName"></b></span>
+      </div>
+    </section>
+
+  </main>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   CENTRAL CONTROL PANEL · Bushwick, Brooklyn
+   ─ Weather + sunrise/sunset: Open-Meteo (free, no API key)
+   ─ Sun & moon positions: computed on-device (SunCalc-style maths,
+     BSD-2, Vladimir Agafonkin) so there's no second network dependency
+   ─ Sky: WebGL cloud shader + 2D canvas rain/snow
+
+   Preview any condition without waiting for it:
+     index.html?code=95            thunderstorm  (WMO weather code)
+     index.html?code=73&at=21:30   snow at 9:30 pm (NYC time)
+   Codes: 0 clear · 2 partly · 3 overcast · 45 fog · 53 drizzle · 63 rain
+          65 heavy rain · 73 snow · 75 heavy snow · 95 thunderstorm
+   ═══════════════════════════════════════════════════════════════════ */
+(() => {
+'use strict';
+
+/* ───────────── CONFIG ───────────── */
+const CFG = {
+  lat: 40.6944, lon: -73.9213,       // Bushwick, Brooklyn
+  tz: 'America/New_York',
+  hour12: true,                      // false → 24-hour clock
+  tempUnit: 'fahrenheit',            // or 'celsius'
+  windUnit: 'mph',
+  refreshMinutes: 10,                // weather refresh interval
+  glScale: 0.6,                      // sky resolution (lower = lighter on older iPads)
+  glFps: 30,
+};
+
+/* ───────────── helpers ───────────── */
+const $ = id => document.getElementById(id);
+const root = document.documentElement;
+const rad = Math.PI / 180, deg = 180 / Math.PI;
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const mix3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+const mul3 = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
+const gray3 = c => { const l = c[0] * .3 + c[1] * .59 + c[2] * .11; return [l, l, l]; };
+const lin = v => v <= .04045 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4);
+const relLum = c => .2126 * lin(c[0]) + .7152 * lin(c[1]) + .0722 * lin(c[2]);
+const rgbStr = c => c.map(v => Math.round(v)).join(' ');
+const P = new URLSearchParams(location.search);
+
+/* soft-black canvas; the weather fades in from the top-right corner toward the bottom-left.
+   d = (x + y) / 2 with x → right and y → up (both 0–1), so d = 1 at the top-right, 0 at the bottom-left. */
+const BASE = [14, 14, 16].map(v => v / 255);            // keep in sync with --base in the CSS
+const MASK = { lo: -.12, hi: .98, gamma: 1.0 };          // where the fade starts / ends, and its curve
+const smoother = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * t * (t * (t * 6 - 15) + 10); };
+const maskAt = d => Math.pow(smoother(MASK.lo, MASK.hi, d), MASK.gamma);
+let cardMask = .5;                                       // how much weather sits behind the arc card
+
+/* ───────────── time (always Brooklyn time, whatever the device says) ───────────── */
+let clockShift = 0;
+const now = () => Date.now() + clockShift;
+const hmsFmt = new Intl.DateTimeFormat('en-US', { timeZone: CFG.tz, hourCycle: 'h23', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+function nycSecs(ms) { const o = {}; for (const p of hmsFmt.formatToParts(ms)) o[p.type] = +p.value; return o.hour * 3600 + o.minute * 60 + o.second; }
+const startOfDay = ms => Math.floor(ms / 1000) * 1000 - nycSecs(ms) * 1000;
+{ const m = /^(\d{1,2}):(\d{2})$/.exec(P.get('at') || ''); if (m) clockShift = (m[1] * 3600 + m[2] * 60 - nycSecs(Date.now())) * 1000; }
+
+const clockFmt = new Intl.DateTimeFormat('en-US', CFG.hour12
+  ? { timeZone: CFG.tz, hour: 'numeric', minute: '2-digit', hour12: true }
+  : { timeZone: CFG.tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+function splitTime(ms) {
+  const parts = clockFmt.formatToParts(ms), g = t => (parts.find(p => p.type === t) || {}).value || '';
+  return { h: g('hour'), m: g('minute'), ap: g('dayPeriod').toLowerCase() };
+}
+const fmtEv = ms => {
+  if (ms == null) return '—';
+  const t = splitTime(ms);
+  return `${t.h}:${t.m}${t.ap ? `<small>${t.ap}</small>` : ''}`;
+};
+
+/* ───────────── astronomy (sun + moon position, moon phase) ───────────── */
+const Astro = (() => {
+  const { sin, cos, tan, asin, acos, atan2: atan, PI } = Math;
+  const dayMs = 864e5, J1970 = 2440588, J2000 = 2451545, e = rad * 23.4397;
+  const toDays = ms => ms / dayMs - .5 + J1970 - J2000;
+  const ra  = (l, b) => atan(sin(l) * cos(e) - tan(b) * sin(e), cos(l));
+  const dec = (l, b) => asin(sin(b) * cos(e) + cos(b) * sin(e) * sin(l));
+  const az  = (H, phi, d) => atan(sin(H), cos(H) * sin(phi) - tan(d) * cos(phi));
+  const alt = (H, phi, d) => asin(sin(phi) * sin(d) + cos(phi) * cos(d) * cos(H));
+  const sid = (d, lw) => rad * (280.16 + 360.9856235 * d) - lw;
+  const refr = h => { if (h < 0) h = 0; return .0002967 / tan(h + .00312536 / (h + .08901179)); };
+  function sunCoords(d) {
+    const M = rad * (357.5291 + .98560028 * d);
+    const C = rad * (1.9148 * sin(M) + .02 * sin(2 * M) + .0003 * sin(3 * M));
+    const L = M + C + rad * 102.9372 + PI;
+    return { dec: dec(L, 0), ra: ra(L, 0) };
+  }
+  function moonCoords(d) {
+    const L = rad * (218.316 + 13.176396 * d), M = rad * (134.963 + 13.064993 * d), F = rad * (93.272 + 13.22935 * d);
+    const l = L + rad * 6.289 * sin(M), b = rad * 5.128 * sin(F);
+    return { ra: ra(l, b), dec: dec(l, b), dist: 385001 - 20905 * cos(M) };
+  }
+  return {
+    sunPos(ms, lat, lon) {
+      const lw = rad * -lon, phi = rad * lat, d = toDays(ms), c = sunCoords(d), H = sid(d, lw) - c.ra;
+      return { az: az(H, phi, c.dec), alt: alt(H, phi, c.dec) };
+    },
+    moonPos(ms, lat, lon) {
+      const lw = rad * -lon, phi = rad * lat, d = toDays(ms), c = moonCoords(d), H = sid(d, lw) - c.ra;
+      let h = alt(H, phi, c.dec); h += refr(h);
+      return { az: az(H, phi, c.dec), alt: h };
+    },
+    moonIllum(ms) {
+      const d = toDays(ms), s = sunCoords(d), m = moonCoords(d), sd = 149598000;
+      const phi = acos(sin(s.dec) * sin(m.dec) + cos(s.dec) * cos(m.dec) * cos(s.ra - m.ra));
+      const inc = atan(sd * sin(phi), m.dist - sd * cos(phi));
+      const ang = atan(cos(s.dec) * sin(s.ra - m.ra), sin(s.dec) * cos(m.dec) - cos(s.dec) * sin(m.dec) * cos(s.ra - m.ra));
+      return { fraction: (1 + cos(inc)) / 2, phase: .5 + .5 * inc * (ang < 0 ? -1 : 1) / PI };
+    },
+  };
+})();
+
+/* ───────────── weather data (Open-Meteo) ───────────── */
+let W = null, weatherTimer = 0;
+async function loadWeather() {
+  clearTimeout(weatherTimer);
+  const url = 'https://api.open-meteo.com/v1/forecast'
+    + `?latitude=${CFG.lat}&longitude=${CFG.lon}`
+    + '&current=temperature_2m,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m'
+    + '&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset'
+    + `&temperature_unit=${CFG.tempUnit}&wind_speed_unit=${CFG.windUnit}`
+    + `&timezone=${encodeURIComponent(CFG.tz)}&timeformat=unixtime&forecast_days=2`;
+  let ok = false;
+  try {
+    const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 15000);
+    const r = await fetch(url, { signal: ctl.signal, cache: 'no-store' });
+    clearTimeout(to);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json(), c = j.current, d = j.daily, ns = now() / 1000;
+    let i = d.time.findIndex(t => ns >= t && ns < t + 86400); if (i < 0) i = 0;
+    W = {
+      temp: c.temperature_2m, code: c.weather_code, cloud: c.cloud_cover,
+      wind: c.wind_speed_10m, dir: c.wind_direction_10m,
+      hi: d.temperature_2m_max[i], lo: d.temperature_2m_min[i],
+      sunrise: d.sunrise[i] * 1000, sunset: d.sunset[i] * 1000,
+    };
+    ok = true;
+  } catch (err) { console.warn('Weather fetch failed, retrying in 1 min:', err); }
+  if (P.has('code')) W = Object.assign({ temp: 68, cloud: 60, wind: 9, dir: 270, hi: 74, lo: 61 }, W || {}, { code: +P.get('code') });
+  weatherTimer = setTimeout(loadWeather, ok ? CFG.refreshMinutes * 60e3 : 60e3);
+  renderWeatherText(); buildArc(); retarget();
+  if (!revealed) reveal();
+}
+let revealed = false;
+function reveal() {                       // first real weather → snap the sky to it, then fade in
+  revealed = true; S = JSON.parse(JSON.stringify(T));
+  document.body.classList.add('ready');
+}
+function renderWeatherText() {
+  if (!W) return;
+  $('hi').textContent = Math.round(W.hi) + '°';
+  $('lo').textContent = Math.round(W.lo) + '°';
+}
+
+/* WMO weather code → scene parameters */
+const RAIN = { 51:.2, 53:.3, 55:.42, 56:.3, 57:.42, 61:.5, 63:.75, 65:1, 66:.6, 67:.9, 80:.5, 81:.75, 82:1, 95:.85, 96:1, 99:1 };
+const SNOW = { 71:.4, 73:.7, 75:1, 77:.3, 85:.5, 86:1 };
+function classify(code, cloudPct) {
+  const r = { cover: .1, fog: 0, rain: 0, snow: 0, dark: 0, storm: 0 };
+  const cc = clamp((cloudPct == null ? 15 : cloudPct) / 100);
+  if (code <= 3) { const rg = [[.05, .16], [.14, .36], [.38, .66], [.88, 1]][code] || [.05, .16]; r.cover = clamp(cc, rg[0], rg[1]); }
+  else if (code === 45 || code === 48) { r.cover = .35; r.fog = code === 48 ? 1 : .94; r.dark = .03; }
+  else if (RAIN[code] != null) {
+    r.rain = RAIN[code]; r.cover = (code >= 80 && code <= 82) ? .93 : .99; r.dark = .1 + r.rain * .35;
+    if (code >= 95) { r.storm = 1; r.cover = 1; r.dark = code === 95 ? .62 : .74; }
+  }
+  else if (SNOW[code] != null) { r.snow = SNOW[code]; r.cover = .99; r.dark = .02 + .05 * r.snow; r.fog = .32 * r.snow; }
+  return r;
+}
+
+/* ───────────── sky palette by sun altitude ─────────────
+   [alt°, zenith, horizon, cloud-lit, cloud-shade]                        */
+const KF = [
+  [-90, [.022,.036,.105], [.055,.085,.190], [.140,.170,.290], [.045,.055,.110]],
+  [-18, [.022,.036,.105], [.055,.085,.190], [.140,.170,.290], [.045,.055,.110]],
+  [-12, [.045,.065,.170], [.140,.150,.320], [.190,.220,.360], [.055,.065,.140]],
+  [ -6, [.080,.130,.320], [.520,.300,.420], [.620,.440,.560], [.160,.170,.320]],
+  [ -1, [.170,.280,.560], [.950,.550,.340], [1.00,.670,.500], [.420,.380,.550]],
+  [  5, [.230,.420,.760], [.980,.750,.540], [1.00,.860,.740], [.550,.600,.740]],
+  [ 14, [.220,.470,.860], [.700,.820,.960], [1.00,.980,.960], [.620,.700,.840]],
+  [ 35, [.160,.440,.900], [.580,.790,.970], [1.00,1.00,1.00], [.640,.720,.860]],
+  [ 90, [.160,.440,.900], [.580,.790,.970], [1.00,1.00,1.00], [.640,.720,.860]],
+];
+function sampleKF(a) {
+  let i = 0; while (i < KF.length - 2 && a > KF[i + 1][0]) i++;
+  const A = KF[i], B = KF[i + 1], t = clamp((a - A[0]) / (B[0] - A[0]));
+  return { zen: mix3(A[1], B[1], t), hor: mix3(A[2], B[2], t), lit: mix3(A[3], B[3], t), shd: mix3(A[4], B[4], t) };
+}
+
+/* coverage (0–1 of sky) → noise threshold, from the measured distribution of the cloud field */
+const COV_T = [[0, .78], [.05, .70], [.1, .647], [.25, .573], [.5, .483], [.75, .394], [.9, .32], [1, .12]];
+function covThr(c) {
+  let i = 0; while (i < COV_T.length - 2 && c > COV_T[i + 1][0]) i++;
+  const a = COV_T[i], b = COV_T[i + 1];
+  return lerp(a[1], b[1], clamp((c - a[0]) / (b[0] - a[0])));
+}
+
+/* ───────────── scene target (recomputed every ~20 s; render eases toward it) ───────────── */
+let S = null, T = null, moonPhase = 0;
+function computeTarget() {
+  const t = now();
+  const sp = Astro.sunPos(t, CFG.lat, CFG.lon), mp = Astro.moonPos(t, CFG.lat, CFG.lon), mi = Astro.moonIllum(t);
+  const sAlt = sp.alt * deg, mAlt = mp.alt * deg;
+  moonPhase = mi.phase; moonFrac = mi.fraction;
+  const wx = classify(W ? W.code : 0, W ? W.cloud : 12);
+  const { cover, fog, dark } = wx;
+  const k = sampleKF(sAlt);
+
+  // weather → palette
+  const desat = clamp(smooth(.62, 1, cover) * .85 + fog * .6, 0, .92);
+  const zen = mul3(mix3(k.zen, mul3(gray3(k.zen), .9), desat), 1 - dark * .5);
+  const hor = mul3(mix3(k.hor, gray3(k.hor), desat * .9), 1 - dark * .32);
+  const night = 1 - smooth(-12, -2, sAlt);
+  const moonStr = smooth(-3, 5, mAlt) * (.22 + .78 * mi.fraction) * (1 - .92 * smooth(-8, 10, sAlt)) * (1 - .85 * fog);
+  let lit = mix3(k.lit, [.5, .58, .75], moonStr * night * .32);
+  lit = mul3(mix3(lit, mul3(gray3(lit), .9), smooth(.4, 1, cover) * .65), 1 - dark * .42);
+  const shd = mul3(mix3(k.shd, mul3(gray3(k.shd), .85), smooth(.3, 1, cover) * .6), 1 - dark * .6 - smooth(.5, 1, cover) * .12);
+  const sunCol = mix3([1, .6, .32], [1, .96, .86], smooth(0, 22, sAlt));
+
+  // how bright is the sky behind the cards? → dark text on bright skies, white text on dim ones
+  const fl = gray3(mix3(hor, zen, .5))[0] * 1.15 + .04;
+  let bg = mix3(hor, lit, clamp(cover) * .5);
+  bg = mix3(bg, [fl, fl, fl], fog * .85);
+  const skyT = smooth(.27, .36, relLum(bg));                       // brightness of the sky itself (rain / snow colour)
+  const inkT = smooth(.27, .36, relLum(mix3(BASE, bg, cardMask))); // brightness behind the card, after fading into black
+
+  // sun / moon → screen (window faces south: east left, west right), kept inside the lit upper-right of the canvas
+  const scr = (a, h) => [.46 + (.5 + clamp(a, -Math.PI, Math.PI) / Math.PI) * .56, .34 + h / 90 * .60];
+  const sun = scr(sp.az, sAlt), moon = scr(mp.az, mAlt);
+  const sunStr = smooth(-4, 6, sAlt) * (1 - .35 * cover) * (1 - .5 * fog) * (1 - dark * .4);
+  const twilight = smooth(-12, -2, sAlt) * (1 - smooth(0, 12, sAlt)) * (1 - .75 * cover) * (1 - .6 * fog);
+  const stars = (1 - smooth(-15, -4, sAlt)) * (1 - cover) * (1 - cover) * (1 - fog);
+  const light = sAlt > -9 ? sun : (mAlt > 0 ? moon : [.75, 1.15]);
+
+  // wind
+  const mph = W ? W.wind : 6, wd = (W ? W.dir : 270) * rad;
+  const dx = Math.sin(wd) * .85 - .15;               // screen drift direction (+ = rightwards)
+  const slant = clamp(dx * Math.min(mph, 35) / 35 * .55, -.5, .5);
+
+  return {
+    zenith: zen, horizon: hor, lit, shade: shd, sunCol, sun, moon, light,
+    cover, thr: covThr(cover), fog, dark, stars, sunStr, moonStr, twilight,
+    rain: wx.rain, snow: wx.snow, storm: wx.storm,
+    windMph: mph, dx, slant, inkT, skyT,
+  };
+}
+function retarget() {
+  T = computeTarget();
+  if (!S) S = JSON.parse(JSON.stringify(T));
+}
+function approach(cur, tgt, k) {
+  for (const key in tgt) {
+    const b = tgt[key];
+    if (Array.isArray(b)) { const a = cur[key]; for (let i = 0; i < b.length; i++) a[i] += (b[i] - a[i]) * k; }
+    else cur[key] += (b - cur[key]) * k;
+  }
+}
+
+/* ───────────── sky renderer (WebGL) ───────────── */
+const VERT = 'attribute vec2 a; void main(){ gl_Position = vec4(a, 0., 1.); }';
+const FRAG = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform vec2  uRes;
+uniform float uTime;
+uniform vec2  uOff;
+uniform vec3  uZenith, uHorizon, uLit, uShade, uSunCol, uBase, uMask;
+uniform vec2  uSun, uMoon, uLight, uFlashPos;
+uniform float uThr, uCover, uFog, uDark, uStars, uSunStr, uMoonStr, uMoonPhase, uTwilight, uFlash;
+
+float hash(vec2 p){
+  vec3 p3 = fract(vec3(p.xyx) * .1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+float noise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f*f*(3.0 - 2.0*f);
+  return mix(mix(hash(i), hash(i + vec2(1.,0.)), u.x),
+             mix(hash(i + vec2(0.,1.)), hash(i + vec2(1.,1.)), u.x), u.y);
+}
+const mat2 R = mat2(1.6, 1.2, -1.2, 1.6);
+float fbm3(vec2 p){ float v = 0., a = .5; for(int i = 0; i < 3; i++){ v += a*noise(p); p = R*p; a *= .5; } return v; }
+float fbm5(vec2 p){ float v = 0., a = .5; for(int i = 0; i < 5; i++){ v += a*noise(p); p = R*p; a *= .5; } return v; }
+
+void main(){
+  vec2 uv  = gl_FragCoord.xy / uRes;
+  float asp = uRes.x / uRes.y;
+  vec2 p = vec2(uv.x * asp, uv.y);
+
+  // sky gradient, denser toward the horizon
+  vec3 col = mix(uHorizon, uZenith, pow(clamp(uv.y, 0., 1.), .72));
+
+  vec3 emit = vec3(0.);   // things that glow (sun, moon, stars): clouds and fog cover them, the fade to black only dims them a little
+
+  // twilight glow hugging the horizon under the sun
+  float hz = exp(-uv.y * 4.2) * exp(-abs(uv.x - uSun.x) * 1.6);
+  col += vec3(1., .42, .2) * hz * uTwilight * .55;
+
+  // stars
+  if(uStars > .002){
+    vec2 sp = p * 46.;
+    vec2 id = floor(sp), f = fract(sp) - .5;
+    float r = hash(id);
+    vec2 jit = vec2(hash(id + 3.7), hash(id + 9.1)) - .5;
+    float d = length(f - jit * .6);
+    float star = step(.955, r) * (1. - smoothstep(0., .15 + .09*hash(id + 1.3), d));
+    star *= .55 + .45*sin(uTime*(.8 + r*2.) + r*60.);
+    emit += vec3(.85, .9, 1.) * star * uStars * (.9 + .7*uv.y);
+  }
+
+  // sun: halo + blown-out disc
+  vec2 ds = (uv - uSun) * vec2(asp, 1.);
+  float dS = length(ds);
+  float sunGlow = exp(-dS*2.6)*.16 + exp(-dS*8.)*.34 + exp(-dS*30.)*.8;
+  emit += mix(uSunCol, vec3(.78, .9, 1.), .5 * (1. - uTwilight)) * sunGlow * uSunStr;
+  emit += uSunCol * (1. - smoothstep(.010, .020, dS)) * 1.6 * uSunStr;
+
+  // moon: glow + shaded disc with the real phase
+  vec2 dm = (uv - uMoon) * vec2(asp, 1.);
+  float dM = length(dm);
+  emit += vec3(.62, .72, .95) * (exp(-dM*5.5)*.20 + exp(-dM*18.)*.28) * uMoonStr;
+  float mr = .030;
+  if(dM < mr * 1.05){
+    vec2 q = dm / mr;
+    float z = sqrt(max(0., 1. - dot(q, q)));
+    float a = uMoonPhase * 6.2831853;
+    vec3 L = vec3(sin(a), 0., -cos(a));
+    float term = smoothstep(-.03, .10, dot(vec3(q, z), L));
+    float tex = .78 + .32*smoothstep(.35, .7, fbm3(q*2.6 + 4.1));
+    vec3 disc = vec3(.96, .95, .90) * tex * (.05 + term*.95);
+    float edge = 1. - smoothstep(.93, 1., length(q));
+    float mk = edge * clamp(uMoonStr*1.6, 0., 1.);
+    col *= 1. - mk*.85;
+    emit += disc * mk;
+  }
+
+  // ceiling-plane perspective: cloud features shrink toward the horizon, no shear
+  vec2 cp = vec2((uv.x - .5) * asp, 1.) / (uv.y * .85 + .32);
+  cp = cp * 3.4 + uOff;
+
+  // high, thin cirrus veils
+  if(uCover < .6){
+    float ci = fbm3(vec2(cp.x * .7, cp.y * 2.4) * 1.3 + vec2(uTime*.004, uOff.y * .3));
+    ci = smoothstep(.52, .88, ci) * (1. - uCover) * .34 * smoothstep(.1, .7, uv.y);
+    col = mix(col, uLit, ci);
+  }
+
+  // main cloud deck: domain-warped fbm, lit from the sun/moon side
+  vec2 w = vec2(fbm3(cp*.8 + vec2(uTime*.012, 3.1)), fbm3(cp*.8 + vec2(7.7, -uTime*.010)));
+  vec2 q2 = cp + (w - .5) * .6;
+  float n = fbm5(q2);
+  float thr = uThr - .055;                                   // uThr: noise level that gives the wanted sky coverage
+  float dens = smoothstep(thr, thr + .11, n);
+  dens = dens * dens * (3. - 2.*dens);
+
+  vec2 dl = (uLight - uv) * vec2(asp, 1.);
+  vec2 ld = dl / (length(dl) + .35);                         // soft near the light: no pinch point
+  float n1 = fbm3(q2);
+  float n2 = fbm3(q2 + ld*.16);
+  float n3 = fbm3(q2 + ld*.36);
+  float thick = clamp((n - thr) / .30, 0., 1.);
+  float lit = .82 - ((n2 - n1)*4.6 + (n3 - n1)*2.4);         // denser toward the light → in shadow
+  lit = clamp(lit - thick*.26 + (1. - thick)*.12, 0., 1.);
+  vec3 cc = mix(uShade, uLit, smoothstep(.05, .95, lit));
+  float prox = exp(-length(dl) * 2.4);
+  cc += uSunCol * (1. - thick) * prox * .34 * uSunStr;       // silver lining
+  cc *= 1. - uDark * (.25 + .5*thick);                       // storm bruising
+  cc += vec3(.72, .80, 1.) * uFlash * (.25 + .75*exp(-length((uv - uFlashPos) * vec2(asp, 1.)) * 1.8)) * (.35 + .65*(1. - thick*.5));
+  cc = mix(cc, uHorizon, pow(1. - uv.y, 3.) * .5);           // aerial perspective
+  col = mix(col, cc, dens * .97);
+  emit *= 1. - dens * .97;
+
+  // fog / mist
+  float fb = fbm3(p*2.2 + uOff*.6 + vec2(uTime*.01, 0.));
+  vec3 fogC = vec3(dot(mix(uHorizon, uZenith, .5), vec3(.333)) * 1.15 + .04);
+  float fogA = clamp(uFog * (.8 + .4*fb), 0., 1.) * .97 * (1. - uv.y*.15);
+  col = mix(col, fogC, fogA);
+  emit *= 1. - fogA;
+
+  col += vec3(.5, .56, .75) * uFlash * .08;
+
+  // the weather fades in from the top-right over soft black (glowing things fade less)
+  float md = (uv.x + uv.y) * .5;
+  float mt = clamp((md - uMask.x) / (uMask.y - uMask.x), 0., 1.);
+  float m = pow(max(mt*mt*mt*(mt*(mt*6. - 15.) + 10.), 1e-4), uMask.z);   // smootherstep: no visible edge at either end
+  col = mix(uBase, col, m) + emit * mix(m, 1., .55);
+
+  // highlight roll-off
+  vec3 hi = max(col - .85, 0.);
+  col = min(col, vec3(.85)) + .15*(1. - exp(-hi*6.6667));
+
+  // dither (kills gradient banding)
+  col += (hash(gl_FragCoord.xy + fract(uTime)*97.) - .5) * (2./255.);
+  gl_FragColor = vec4(col, 1.);
+}`;
+
+const glCanvas = $('sky');
+let gl = null, U = {}, glReady = false;
+const UNIFORMS = ['uRes','uTime','uOff','uZenith','uHorizon','uLit','uShade','uSunCol','uSun','uMoon','uLight','uFlashPos',
+  'uBase','uMask','uThr','uCover','uFog','uDark','uStars','uSunStr','uMoonStr','uMoonPhase','uTwilight','uFlash'];
+function initGL() {
+  glReady = false;
+  gl = glCanvas.getContext('webgl', { antialias: false, alpha: false, depth: false, stencil: false });
+  if (!gl) return false;
+  const sh = (type, src) => {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error(gl.getShaderInfoLog(s)); return null; }
+    return s;
+  };
+  const vs = sh(gl.VERTEX_SHADER, VERT), fs = sh(gl.FRAGMENT_SHADER, FRAG);
+  if (!vs || !fs) return false;
+  const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.error(gl.getProgramInfoLog(prog)); return false; }
+  gl.useProgram(prog);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  UNIFORMS.forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  gl.uniform3fv(U.uBase, BASE); gl.uniform3f(U.uMask, MASK.lo, MASK.hi, MASK.gamma);
+  glReady = true; return true;
+}
+glCanvas.addEventListener('webglcontextlost', e => { e.preventDefault(); glReady = false; });
+glCanvas.addEventListener('webglcontextrestored', () => { initGL(); });
+
+let offX = 0, offY = 0, flashes = [], nextFlash = 2, flashPos = [.5, .6];
+function renderSky(time, flash) {
+  gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+  gl.uniform2f(U.uRes, glCanvas.width, glCanvas.height);
+  gl.uniform1f(U.uTime, time);
+  gl.uniform2f(U.uOff, offX, offY);
+  gl.uniform3fv(U.uZenith, S.zenith); gl.uniform3fv(U.uHorizon, S.horizon);
+  gl.uniform3fv(U.uLit, S.lit); gl.uniform3fv(U.uShade, S.shade); gl.uniform3fv(U.uSunCol, S.sunCol);
+  gl.uniform2fv(U.uSun, S.sun); gl.uniform2fv(U.uMoon, S.moon); gl.uniform2fv(U.uLight, S.light);
+  gl.uniform2fv(U.uFlashPos, flashPos);
+  gl.uniform1f(U.uThr, S.thr); gl.uniform1f(U.uCover, S.cover); gl.uniform1f(U.uFog, S.fog); gl.uniform1f(U.uDark, S.dark);
+  gl.uniform1f(U.uStars, S.stars); gl.uniform1f(U.uSunStr, S.sunStr); gl.uniform1f(U.uMoonStr, S.moonStr);
+  gl.uniform1f(U.uMoonPhase, moonPhase); gl.uniform1f(U.uTwilight, S.twilight); gl.uniform1f(U.uFlash, flash);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+function flashLevel(t) {
+  let v = 0;
+  for (const f of flashes) { const d = t - f[0]; if (d >= 0) v += f[1] * Math.exp(-d * 9); }
+  flashes = flashes.filter(f => t - f[0] < 1.5);
+  return Math.min(v, 1.2);
+}
+
+/* ───────────── precipitation (2D canvas) ───────────── */
+const Precip = (() => {
+  const cv = $('precip'), ctx = cv.getContext && cv.getContext('2d');
+  const MAXR = 700, MAXS = 260, rain = [], snow = [];
+  let w = 0, h = 0, dpr = 1, drawn = false, maskGrad = null;
+  const mk = () => { const s = document.createElement('canvas'); s.width = s.height = 64; const x = s.getContext('2d');
+    if (!x) return s;
+    const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(.26, 'rgba(255,255,255,.85)'); g.addColorStop(.42, 'rgba(255,255,255,.25)');
+    g.addColorStop(.58, 'rgba(120,140,170,.22)'); g.addColorStop(1, 'rgba(120,140,170,0)');
+    x.fillStyle = g; x.fillRect(0, 0, 64, 64); return s; };
+  const sprite = mk();
+  for (let i = 0; i < MAXR; i++) rain.push({ x: 0, y: 0, v: .85 + Math.random() * .3, l: .75 + Math.random() * .5 });
+  for (let i = 0; i < MAXS; i++) snow.push({ x: 0, y: 0, v: .7 + Math.random() * .6, f: .5 + Math.random() * 1.5, p: Math.random() * 6.28, a: 8 + Math.random() * 18, o: .55 + Math.random() * .45 });
+  function resize(W_, H_) {
+    w = W_; h = H_; dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    for (const d of rain) { d.x = Math.random() * (w + 240) - 120; d.y = Math.random() * (h + 100) - 50; }
+    for (const f of snow) { f.x = Math.random() * (w + 80) - 40; f.y = Math.random() * (h + 40) - 20; }
+    if (ctx) {                                   // gradient whose value at any pixel equals d = (x + y) / 2, so rain fades exactly like the sky
+      const inv2 = 1 / (w * w) + 1 / (h * h);
+      maskGrad = ctx.createLinearGradient(0, h, 2 / w / inv2, h - 2 / h / inv2);
+      for (let i = 0; i <= 16; i++) maskGrad.addColorStop(i / 16, `rgba(0,0,0,${maskAt(i / 16).toFixed(4)})`);
+    }
+  }
+  const RV = [900, 1300, 1800], RW = [.8, 1.15, 1.7], RL = [11, 19, 30], RA = [.20, .32, .50];
+  function drawRain(dt) {
+    const n = Math.floor(MAXR * S.rain), sl = S.slant;
+    const c = mix3([225, 236, 255], [88, 108, 140], S.skyT).map(Math.round).join(',');
+    ctx.lineCap = 'round';
+    for (let L = 0; L < 3; L++) {
+      ctx.lineWidth = RW[L];
+      ctx.strokeStyle = `rgba(${c},${(RA[L] * (.55 + .45 * S.rain)).toFixed(3)})`;
+      ctx.beginPath();
+      for (let i = L; i < n; i += 3) {
+        const d = rain[i], sp = RV[L] * d.v;
+        d.y += sp * dt; d.x += sp * dt * sl;
+        if (d.y > h + 40) { d.y = -40 - Math.random() * 120; d.x = Math.random() * (w + 240) - 120; }
+        const len = RL[L] * d.l * (.6 + .6 * S.rain);
+        ctx.moveTo(d.x, d.y); ctx.lineTo(d.x - len * sl, d.y - len);
+      }
+      ctx.stroke();
+    }
+  }
+  const SV = [42, 66, 104], SS = [6, 11, 20];
+  function drawSnow(dt, t) {
+    const n = Math.floor(MAXS * S.snow), spr = sprite;
+    for (let i = 0; i < n; i++) {
+      const f = snow[i], L = i % 3;
+      f.y += SV[L] * f.v * dt;
+      f.x += (Math.sin(t * f.f + f.p) * f.a * (.5 + L * .4) + S.slant * 120 + S.dx * 14) * dt;
+      if (f.y > h + 30) { f.y = -30; f.x = Math.random() * (w + 80) - 40; }
+      if (f.x > w + 40) f.x = -40; else if (f.x < -40) f.x = w + 40;
+      const s = SS[L] * (.8 + f.v * .3);
+      ctx.globalAlpha = f.o * (.55 + .2 * L) * clamp(S.snow * 1.6);
+      ctx.drawImage(spr, f.x - s / 2, f.y - s / 2, s, s);
+    }
+    ctx.globalAlpha = 1;
+  }
+  function frame(dt, t) {
+    if (!ctx) return;
+    const r = S.rain > .01, s = S.snow > .01;
+    if (!r && !s) { if (drawn) { ctx.clearRect(0, 0, w, h); drawn = false; } return; }
+    ctx.clearRect(0, 0, w, h); drawn = true;
+    if (r) drawRain(dt);
+    if (s) drawSnow(dt, t);
+    ctx.globalCompositeOperation = 'destination-in';   // keep only what falls inside the weather's glow
+    ctx.fillStyle = maskGrad; ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  return { resize, frame };
+})();
+
+/* ───────────── text + glass that follow the light ───────────── */
+let lastInk = -1, lastWarm = -1;
+function applyTheme() {
+  const t = S.inkT, warm = clamp(S.twilight);
+  if (Math.abs(t - lastInk) + Math.abs(warm - lastWarm) < .004) return;
+  lastInk = t; lastWarm = warm;
+  const set = (k, v) => root.style.setProperty(k, v);
+  const lightInk = mix3([255, 255, 255], [255, 236, 218], warm * .8);
+  set('--ink', rgbStr(mix3(lightInk, [10, 22, 42], t)));
+  set('--shade', rgbStr(mix3([0, 0, 0], [255, 255, 255], t)));
+  const hi = lerp(.16, .50, t), lo = [lerp(14, 255, t), lerp(24, 255, t), lerp(46, 255, t)], la = lerp(.22, .20, t);
+  set('--glass-hi', `rgba(255,255,255,${hi.toFixed(3)})`);
+  set('--glass-lo', `rgba(${lo.map(Math.round).join(',')},${la.toFixed(3)})`);
+  set('--bright', lerp(.92, 1.08, t).toFixed(3));
+  set('--sun', rgbStr(mix3([255, 214, 120], [206, 112, 0], t)));
+  set('--moon', rgbStr(mix3([214, 228, 255], [70, 90, 140], t)));
+  set('--moon-lit', rgbStr(mix3([250, 247, 236], [255, 253, 246], t)));
+  set('--moon-dark', rgbStr(mix3([255, 255, 255], [40, 58, 96], t)));
+  set('--moon-dark-a', lerp(.14, .5, t).toFixed(3));
+}
+function fallbackSky() {          // only used if the device can't do WebGL: same top-right → bottom-left fade, no clouds
+  const c = a => rgbStr(a.map(v => v * 255)), b = BASE.map(v => v * 255);
+  document.body.style.background = `linear-gradient(to bottom left, rgb(${c(S.zenith)}) 0%, rgb(${c(S.horizon)}) 45%, rgb(${rgbStr(b)}) 100%)`;
+}
+
+/* ───────────── clock ───────────── */
+const dowFmt = new Intl.DateTimeFormat('en-US', { timeZone: CFG.tz, weekday: 'long' });
+const dmyFmt = new Intl.DateTimeFormat('en-US', { timeZone: CFG.tz, month: 'long', day: 'numeric', year: 'numeric' });
+let lastHM = '', lastDate = '';
+function tickClock() {
+  const ms = now(), t = splitTime(ms), hm = `${t.h}:${t.m}`;
+  if (hm !== lastHM) { lastHM = hm; $('hm').textContent = hm; $('ap').textContent = t.ap; }
+  const ds = dmyFmt.format(ms);                                    // "September 18, 2026"
+  if (ds !== lastDate) { lastDate = ds; $('dow').textContent = dowFmt.format(ms); $('dmy').textContent = ds; }
+}
+
+/* ───────────── sun wave ─────────────
+   One continuous line: the sun's altitude from midnight to midnight (above the
+   horizon by day, below it at night) with a single marker at the current time.
+   Under it: the next sunset / sunrise and the moon's phase.                      */
+const ARC = { W: 560, hy: 62, padX: 14, amp: 50 };
+let dayStart = 0, kScale = 1, moonFrac = .5;
+const xAt = f => ARC.padX + clamp(f) * (ARC.W - 2 * ARC.padX);
+const yOf = a => ARC.hy - a * kScale;
+const sunAltNow = t => Astro.sunPos(t, CFG.lat, CFG.lon).alt * deg + .833;    // 0 = sunrise/sunset line
+function buildArc() {
+  const t = now(); dayStart = startOfDay(t);
+  const N = 144, step = 864e5 / N, sv = [];
+  let mx = 1;
+  for (let i = 0; i <= N; i++) { const a = sunAltNow(dayStart + i * step); sv.push(a); mx = Math.max(mx, Math.abs(a)); }
+  kScale = ARC.amp / mx;
+  let d = '';
+  sv.forEach((a, i) => { d += (i ? ' L' : 'M') + xAt(i / N).toFixed(1) + ' ' + yOf(a).toFixed(1); });
+  $('wave').setAttribute('d', d);
+
+  let dots = '';                                                     // today's sunrise / sunset on the horizon
+  for (let i = 1; i <= N; i++) if ((sv[i - 1] < 0) !== (sv[i] < 0)) {
+    const f = (i - 1 + Math.abs(sv[i - 1]) / Math.abs(sv[i] - sv[i - 1])) / N;
+    dots += `<circle class="ev-dot" cx="${xAt(f).toFixed(1)}" cy="${ARC.hy}" r="2.4"/>`;
+  }
+  $('evDots').innerHTML = dots;
+  updateArc();
+}
+// next two sun events after `t` (sunrise or sunset), found by scanning ahead then bisecting
+function nextSunEvents(t) {
+  const out = [], step = 6e5;
+  let a = sunAltNow(t), tt = t;
+  for (let i = 0; i < 150 && out.length < 2; i++) {
+    const t2 = tt + step, b = sunAltNow(t2);
+    if ((a < 0) !== (b < 0)) {
+      let lo = tt, hi = t2;
+      for (let k = 0; k < 18; k++) { const m = (lo + hi) / 2; ((sunAltNow(m) < 0) === (a < 0)) ? lo = m : hi = m; }
+      out.push({ name: b >= 0 ? 'Sunrise' : 'Sunset', at: (lo + hi) / 2 });
+    }
+    tt = t2; a = b;
+  }
+  return out;
+}
+function moonPhaseName(p) {
+  if (p < .03 || p > .97) return 'New';
+  if (p < .22) return 'Waxing crescent'; if (p < .28) return 'First quarter';
+  if (p < .47) return 'Waxing gibbous';  if (p < .53) return 'Full';
+  if (p < .72) return 'Waning gibbous';  if (p < .78) return 'Last quarter';
+  return 'Waning crescent';
+}
+function moonLitPath(r, phase) {
+  const k = Math.cos(phase * 2 * Math.PI), rx = Math.abs(k) * r, waxing = phase < .5;
+  const limb = waxing ? 1 : 0, term = waxing ? (k > 0 ? 0 : 1) : (k > 0 ? 1 : 0);
+  return `M0 ${-r} A${r} ${r} 0 0 ${limb} 0 ${r} A${rx.toFixed(2)} ${r} 0 0 ${term} 0 ${-r}Z`;
+}
+function updateArc() {
+  const t = now();
+  if (t - dayStart >= 864e5 || t < dayStart) { buildArc(); return; }
+  const x = xAt((t - dayStart) / 864e5), sa = sunAltNow(t);
+  $('nowLine').setAttribute('x1', x); $('nowLine').setAttribute('x2', x);
+  $('mk').setAttribute('transform', `translate(${x.toFixed(1)} ${yOf(sa).toFixed(1)})`);
+  const day = sa >= 0;                                              // the point is the sun by day, the moon at night
+  $('mkSun').style.opacity = day ? 1 : 0;
+  $('mkMoon').style.opacity = day ? 0 : 1;
+  $('moonLit').setAttribute('d', moonLitPath(8.2, moonPhase));
+
+  const ev = nextSunEvents(t);
+  ev.forEach((e, i) => { $('ev' + (i + 1) + 'Name').textContent = e.name; $('ev' + (i + 1)).innerHTML = fmtEv(e.at); });
+  $('moonName').innerHTML = `${moonPhaseName(moonPhase)}<small>${Math.round(moonFrac * 100)}%</small>`;
+}
+
+/* ───────────── L train (MTA realtime feed, via the MTAPI JSON proxy at wheresthefuckingtrain.com) ─────────────
+   Nearest L stop to 1202 Decatur St is Wilson Av (about 4 minutes on foot).
+   Trip to 6 Av = walk to the platform + wait for the first train you can make + scheduled ride.
+   Preview without the network: index.html?l=4,11,19  (minutes until the next Manhattan-bound trains) */
+const TRANSIT = {
+  api: 'https://api.wheresthefuckingtrain.com',
+  station: { lat: 40.68876, lon: -73.90405, match: /wilson/i },   // used to pick the station from the nearest-5 lookup
+  walkMin: 4,                                                       // door → Manhattan-bound platform
+  rideMin: 30,                                                      // Wilson Av → 6 Av, scheduled
+  refreshSec: 30,
+};
+let transitTimer = 0;
+async function loadTransit() {
+  clearTimeout(transitTimer);
+  const nowReal = Date.now();
+  let times = null, ok = false;
+  if (P.has('l')) { const base = now(); times = P.get('l').split(',').map(m => base + (+m) * 60e3); ok = true; renderTransit(times, base, true); transitTimer = setTimeout(loadTransit, 30e3); return; }
+  else try {
+    const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 12000);
+    const r = await fetch(`${TRANSIT.api}/by-location?lat=${TRANSIT.station.lat}&lon=${TRANSIT.station.lon}`, { signal: ctl.signal, cache: 'no-store' });
+    clearTimeout(to);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json(), list = j.data || [];
+    const st = list.find(x => TRANSIT.station.match.test(x.name || '') && (x.routes || []).includes('L'))
+            || list.find(x => (x.routes || []).includes('L'));
+    if (!st) throw new Error('no L station in response');
+    $('tStation').textContent = st.name;
+    times = (st.N || []).filter(a => a.route === 'L').map(a => Date.parse(a.time))   // N = Manhattan-bound on the L
+      .filter(t => t > nowReal - 45e3).sort((a, b) => a - b);
+    ok = true;
+  } catch (err) { console.warn('L train fetch failed, retrying in 1 min:', err); }
+  renderTransit(times, nowReal, ok);
+  transitTimer = setTimeout(loadTransit, ok ? TRANSIT.refreshSec * 1000 : 60e3);
+}
+function renderTransit(times, nowReal, ok) {
+  const el = $('transit');
+  if (!ok || !times) { el.classList.add('off'); $('tTimes').innerHTML = '<b>Train times unavailable</b>'; $('tripMin').textContent = '—'; $('tripSub').textContent = ''; return; }
+  el.classList.remove('off');
+  const mins = times.slice(0, 3).map(t => Math.max(0, Math.round((t - nowReal) / 60e3)));
+  $('tTimes').innerHTML = mins.length
+    ? mins.map(m => `<b>${m === 0 ? 'Now' : m}</b>`).join('') + '<i>min</i>'
+    : '<b>No trains listed</b>';
+
+  const canMake = times.find(t => t >= nowReal + TRANSIT.walkMin * 60e3 - 45e3);   // 45 s of grace at the turnstile
+  if (!canMake) { $('tripMin').textContent = '—'; $('tripSub').textContent = mins.length ? 'Next train is too soon to catch' : ''; return; }
+  const arrive = canMake + TRANSIT.rideMin * 60e3;
+  $('tripMin').textContent = Math.round((arrive - nowReal) / 60e3) + ' min';
+  $('tripSub').innerHTML = `Leave now, arrive <b>${fmtEv(arrive)}</b>`;
+}
+
+/* ───────────── main loop ───────────── */
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  glCanvas.width = Math.max(2, Math.round(w * CFG.glScale));
+  glCanvas.height = Math.max(2, Math.round(h * CFG.glScale));
+  Precip.resize(w, h);
+  const r = $('arcCard').getBoundingClientRect();                  // how much weather sits behind the arc card
+  cardMask = maskAt(((r.left + r.width / 2) / w + 1 - (r.top + r.height / 2) / h) / 2);
+  if (S) retarget();
+}
+let last = performance.now(), lastGL = 0, tSec = 0, lastFallback = 0;
+function frame(ms) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(.1, (ms - last) / 1000); last = ms; tSec += dt;
+  if (!S) return;
+  approach(S, T, 1 - Math.exp(-dt / 3.5));
+
+  const speed = .0064 + S.windMph * .0012;
+  offX -= S.dx * speed * dt; offY += .004 * dt * (1 + S.windMph * .05);
+  if (Math.abs(offX) > 2e4) offX = 0;
+
+  if (S.storm > .5 && tSec > nextFlash) {
+    flashes.push([tSec, 1], [tSec + .13, .75], [tSec + .3, .5]);
+    flashPos = [.12 + Math.random() * .76, .45 + Math.random() * .4];
+    nextFlash = tSec + 3.5 + Math.random() * 9;
+  }
+  if (glReady) {
+    if (ms - lastGL > 1000 / CFG.glFps - 2) { lastGL = ms; renderSky(tSec, flashLevel(tSec)); }
+  } else if (!gl && ms - lastFallback > 1000) { lastFallback = ms; fallbackSky(); }
+
+  Precip.frame(dt, tSec);
+  applyTheme();
+}
+
+/* ───────────── boot ───────────── */
+initGL();
+resize();
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 250));
+retarget();
+tickClock(); buildArc();
+setInterval(tickClock, 1000);
+setInterval(() => { retarget(); updateArc(); }, 20000);
+loadWeather();
+loadTransit();
+setTimeout(() => { if (!revealed) reveal(); }, 6000);   // offline safety: show the sky anyway
+requestAnimationFrame(frame);
+
+// keep the iPad awake (needs one tap after loading; also set Settings → Display → Auto-Lock → Never)
+let wake = null;
+const keepAwake = async () => { try { if ('wakeLock' in navigator) wake = await navigator.wakeLock.request('screen'); } catch (e) {} };
+window.addEventListener('pointerdown', keepAwake, { once: true });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (wake) keepAwake();
+  loadWeather(); loadTransit();
+});
+})();
+</script>
+</body>
+</html>
