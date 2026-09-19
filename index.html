@@ -145,19 +145,38 @@ body.ready #sky{ opacity:1; }
 
 /* ── middle: next L trains + trip to 6 Av ──────────────────── */
 .transit{
-  justify-self:center; text-align:center;
+  justify-self:center; text-align:left;
   color:rgb(var(--offwhite)); white-space:nowrap;
   text-shadow:0 0 48px rgb(255 255 255 / .07);
 }
 .clock{ justify-self:start; }
+
+/* top-left 1:30 timer: a clock ring with 6 o'clock cut out; a dot sweeps it as the countdown */
+.timer{
+  position:fixed; z-index:6;
+  top:calc(var(--pad) + env(safe-area-inset-top));
+  left:calc(var(--pad) + env(safe-area-inset-left));
+  width:clamp(34px, 4.6vmin, 52px); height:clamp(34px, 4.6vmin, 52px);
+  padding:0; border:0; background:none; cursor:pointer; pointer-events:auto;
+  color:rgb(var(--offwhite)); -webkit-appearance:none; -webkit-tap-highlight-color:transparent;
+}
+.timer svg{ width:100%; height:100%; display:block; overflow:visible; filter:drop-shadow(0 1px 10px rgb(0 0 0 / .38)); }
+.timer .ring{ fill:none; stroke:rgb(var(--offwhite) / .5); stroke-width:2; stroke-linecap:round; transition:stroke .3s ease; }
+.timer:hover .ring,.timer.run .ring{ stroke:rgb(var(--offwhite) / .82); }
+.timer .prog{ fill:none; stroke:rgb(var(--offwhite)); stroke-width:2.6; stroke-linecap:round; opacity:0; transition:opacity .3s ease; }
+.timer .t-dot{ fill:rgb(var(--offwhite)); opacity:0; transition:opacity .3s ease; }
+.timer .t-glow{ fill:rgb(var(--offwhite) / .5); opacity:0; transition:opacity .3s ease; }
+.timer.run .prog,.timer.run .t-dot{ opacity:1; }
+.timer.run .t-glow{ opacity:.55; }
+
 /* centered block */
 .t-head{
   font-size:clamp(15px, 2.4vmin, 26px); font-weight:400; letter-spacing:-.005em; opacity:.9;
 }
 .t-head i{ font-style:normal; font-weight:300; opacity:.6; margin-left:.5em; }
 .t-times{
-  display:flex; justify-content:center; align-items:baseline; gap:.55em; margin-top:.08em;
-  font-size:clamp(26px, 4.8vmin, 54px); font-weight:200; letter-spacing:-.03em; line-height:1.1;
+  display:flex; justify-content:flex-start; align-items:baseline; gap:.6em; margin-top:.08em;
+  font-size:clamp(30px, 5.5vmin, 62px); font-weight:200; letter-spacing:-.03em; line-height:1.1;
   font-variant-numeric:tabular-nums;
 }
 .t-times b{ font-weight:200; }
@@ -218,6 +237,16 @@ body.ready #sky{ opacity:1; }
 <body>
   <canvas id="sky" aria-hidden="true"></canvas>
   <canvas id="precip" aria-hidden="true"></canvas>
+
+  <!-- ░░ TOP-LEFT · 1:30 visual timer (tap the ring to start / stop) ░░ -->
+  <button id="timerBtn" class="timer" type="button" aria-label="Start a one minute thirty second timer">
+    <svg viewBox="0 0 44 44" aria-hidden="true">
+      <path class="ring" d="M 15.49 36.62 A 16 16 0 1 1 28.51 36.62"/>
+      <path id="timerProg" class="prog"/>
+      <circle id="timerGlow" class="t-glow" r="6"/>
+      <circle id="timerDot" class="t-dot" r="3.2"/>
+    </svg>
+  </button>
 
   <main class="dock">
 
@@ -923,9 +952,10 @@ function updateArc() {
    platforms carry the "N" suffix in the feed, so Wilson Av Manhattan-bound is stop L20N.
    Preview without the network: index.html?l=4,11,19  (minutes to the next trains) */
 const TRANSIT = {
-  feed: 'https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l',
-  proxy: 'https://api.wheresthefuckingtrain.com/by-id/L20',   // JSON fallback if the direct feed ever refuses
+  route: 'https://api.wheresthefuckingtrain.com/by-route/L',  // JSON, open CORS — the reliable browser path
+  feed:  'https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l',  // raw MTA protobuf, backup
   stopN: 'L20N',                                              // Wilson Av, Manhattan-bound
+  stationMatch: /wilson/i,
   stationName: 'Wilson Av',
   walkMin: 4,                                                 // door → Manhattan-bound platform
   rideMin: 30,                                                // Wilson Av → 6 Av, scheduled
@@ -967,27 +997,28 @@ async function loadTransit() {
   }
   const nowReal = Date.now();
   let times = null;
-  // primary: the MTA protobuf feed, decoded on-device
+  const fresh = arr => arr.filter(t => t > nowReal - 45e3).sort((a, b) => a - b);
+  // primary: the wheresthefuckingtrain JSON feed (open CORS, no key)
   try {
     const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 12000);
-    const r = await fetch(TRANSIT.feed, { signal: ctl.signal, cache: 'no-store' });
+    const r = await fetch(TRANSIT.route, { signal: ctl.signal, cache: 'no-store' });
     clearTimeout(to);
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const buf = new Uint8Array(await r.arrayBuffer());
-    times = decodeArrivals(buf, TRANSIT.stopN).map(a => a.time)
-      .filter(t => t > nowReal - 45e3).sort((a, b) => a - b);
+    const j = await r.json();
+    const st = (j.data || []).find(x => TRANSIT.stationMatch.test(x.name || ''));
+    if (!st) throw new Error('Wilson Av not found in feed');
+    times = fresh((st.N || []).filter(a => a.route === 'L').map(a => Date.parse(a.time)));   // N = Manhattan-bound
   } catch (err) {
-    console.warn('Direct MTA feed failed, trying JSON proxy:', err);
-    // fallback: the wheresthefuckingtrain JSON proxy
+    console.warn('L train JSON feed failed, trying the raw MTA protobuf:', err);
+    // backup: the MTA protobuf feed, decoded on-device
     try {
       const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 12000);
-      const r = await fetch(TRANSIT.proxy, { signal: ctl.signal, cache: 'no-store' });
+      const r = await fetch(TRANSIT.feed, { signal: ctl.signal, cache: 'no-store' });
       clearTimeout(to);
       if (!r.ok) throw new Error('HTTP ' + r.status);
-      const j = await r.json(), st = (j.data || [])[0];
-      if (st) times = (st.N || []).filter(a => a.route === 'L').map(a => Date.parse(a.time))
-        .filter(t => t > nowReal - 45e3).sort((a, b) => a - b);
-    } catch (err2) { console.warn('L train proxy also failed:', err2); }
+      const buf = new Uint8Array(await r.arrayBuffer());
+      times = fresh(decodeArrivals(buf, TRANSIT.stopN).map(a => a.time));
+    } catch (err2) { console.warn('Raw MTA feed also failed:', err2); }
   }
   renderTransit(times, nowReal, times != null);
   transitTimer = setTimeout(loadTransit, times != null ? TRANSIT.refreshSec * 1000 : 60e3);
@@ -1055,6 +1086,30 @@ loadWeather();
 loadTransit();
 setTimeout(() => { if (!revealed) reveal(); }, 6000);   // offline safety: show the sky anyway
 requestAnimationFrame(frame);
+
+/* ───────────── 1:30 timer ───────────── */
+(() => {
+  const DUR = 90;                                   // always 1:30
+  const CX = 22, CY = 22, CR = 16, A0 = 204, A1 = 516;   // ring geom; gap centred on 6 o'clock (bottom)
+  const btn = $('timerBtn'), prog = $('timerProg'), dot = $('timerDot'), glow = $('timerGlow');
+  const pt = d => { const a = d * rad; return [CX + CR * Math.sin(a), CY - CR * Math.cos(a)]; };
+  const arc = (from, to) => { const [x0, y0] = pt(from), [x1, y1] = pt(to);
+    return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${CR} ${CR} 0 ${to - from > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`; };
+  let start = 0, running = false, raf = 0;
+  function frame() {
+    const rem = Math.max(0, DUR - (performance.now() / 1000 - start));
+    const deg = A0 + (1 - rem / DUR) * (A1 - A0);
+    const [dx, dy] = pt(deg);
+    dot.setAttribute('cx', dx.toFixed(2)); dot.setAttribute('cy', dy.toFixed(2));
+    glow.setAttribute('cx', dx.toFixed(2)); glow.setAttribute('cy', dy.toFixed(2));
+    prog.setAttribute('d', rem > 0.05 ? arc(deg, A1) : '');    // bright arc = time remaining
+    if (rem <= 0) { stop(); return; }
+    raf = requestAnimationFrame(frame);
+  }
+  function run() { start = performance.now() / 1000; running = true; btn.classList.add('run'); cancelAnimationFrame(raf); frame(); }
+  function stop() { running = false; btn.classList.remove('run'); cancelAnimationFrame(raf); prog.setAttribute('d', ''); }
+  btn.addEventListener('click', () => running ? stop() : run());
+})();
 
 // keep the iPad awake (needs one tap after loading; also set Settings → Display → Auto-Lock → Never)
 let wake = null;
