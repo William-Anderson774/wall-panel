@@ -56,7 +56,7 @@ body.ready #sky{ opacity:1; }
 /* ── bottom dock ────────────────────────────────────────────── */
 .dock{
   position:fixed; left:0; right:0; bottom:0; z-index:5;
-  display:flex; justify-content:flex-start; align-items:flex-end; gap:calc(var(--pad) * 1.1);
+  display:grid; grid-template-columns:1fr auto 1fr; align-items:end; gap:calc(var(--pad) * 1.1);
   padding:var(--pad);
   padding-left:calc(var(--pad) + env(safe-area-inset-left));
   padding-right:calc(var(--pad) + env(safe-area-inset-right));
@@ -133,9 +133,11 @@ body.ready #sky{ opacity:1; }
   margin-top:.12em; white-space:nowrap;
   font-size:clamp(17px, 2.9vmin, 31px); font-weight:300; letter-spacing:.005em; opacity:.72;
 }
+.now{ display:flex; align-items:baseline; gap:.7em; margin-top:.7em; }
+.cur{ font-size:clamp(26px, 4.6vmin, 50px); font-weight:200; letter-spacing:-.02em; font-variant-numeric:tabular-nums; }
 .hl{
-  display:flex; justify-content:flex-start; gap:1.4em; margin-top:.8em;
-  font-size:clamp(16px, 2.6vmin, 27px); font-weight:300; letter-spacing:.01em; opacity:.6;
+  display:flex; justify-content:flex-start; gap:1.1em;
+  font-size:clamp(15px, 2.4vmin, 25px); font-weight:300; letter-spacing:.01em; opacity:.55;
 }
 .hl i{ font-style:normal; font-weight:400; opacity:.7; margin-right:.3em; }
 .hl b{ font-weight:400; font-variant-numeric:tabular-nums; }
@@ -143,15 +145,18 @@ body.ready #sky{ opacity:1; }
 
 /* ── middle: next L trains + trip to 6 Av ──────────────────── */
 .transit{
+  justify-self:center; text-align:center;
   color:rgb(var(--offwhite)); white-space:nowrap;
   text-shadow:0 0 48px rgb(255 255 255 / .07);
 }
+.clock{ justify-self:start; }
+/* centered block */
 .t-head{
   font-size:clamp(15px, 2.4vmin, 26px); font-weight:400; letter-spacing:-.005em; opacity:.9;
 }
 .t-head i{ font-style:normal; font-weight:300; opacity:.6; margin-left:.5em; }
 .t-times{
-  display:flex; align-items:baseline; gap:.55em; margin-top:.08em;
+  display:flex; justify-content:center; align-items:baseline; gap:.55em; margin-top:.08em;
   font-size:clamp(26px, 4.8vmin, 54px); font-weight:200; letter-spacing:-.03em; line-height:1.1;
   font-variant-numeric:tabular-nums;
 }
@@ -173,7 +178,7 @@ body.ready #sky{ opacity:1; }
 
 /* ── right: sun wave, no box ───────────────────────────────── */
 .arc{
-  width:min(36vw, 560px); min-width:260px; flex:0 1 auto; margin-left:auto; pointer-events:auto;
+  width:min(36vw, 560px); min-width:260px; justify-self:end; pointer-events:auto;
   color:rgb(var(--offwhite));
   text-shadow:0 1px 18px rgb(0 0 0 / .45), 0 0 2px rgb(0 0 0 / .25);
 }
@@ -200,9 +205,11 @@ body.ready #sky{ opacity:1; }
 .ev small{ font-size:.72em; opacity:.6; margin-left:.35em; }
 
 /* portrait iPad / narrow windows */
-@media (max-aspect-ratio:1/1){                        /* portrait: wave on its own row above */
-  .dock{ flex-wrap:wrap; row-gap:calc(var(--pad) * 1.2); }
-  .arc{ order:-1; width:100%; margin-left:0; }
+@media (max-aspect-ratio:1/1){                        /* portrait: one column, wave on top */
+  .dock{ grid-template-columns:1fr; row-gap:calc(var(--pad) * 1.1); }
+  .transit{ justify-self:start; text-align:left; }
+  .t-times{ justify-content:flex-start; }
+  .arc{ order:-1; width:100%; justify-self:stretch; }
   .time{ font-size:min(16vmin, 11vw); }
 }
 </style>
@@ -219,9 +226,12 @@ body.ready #sky{ opacity:1; }
       <div class="time"><span id="hm">--:--</span><span id="ap" class="ap"></span></div>
       <div class="dow" id="dow"></div>
       <div class="dmy" id="dmy"></div>
-      <div class="hl">
-        <span><i>H:</i><b id="hi">--°</b></span>
-        <span><i>L:</i><b id="lo">--°</b></span>
+      <div class="now">
+        <span class="cur" id="temp">--°</span>
+        <span class="hl">
+          <span><i>H:</i><b id="hi">--°</b></span>
+          <span><i>L:</i><b id="lo">--°</b></span>
+        </span>
       </div>
       <!-- ADD MORE ROWS HERE (wind, humidity, calendar, lights…) -->
     </section>
@@ -424,6 +434,7 @@ function reveal() {                       // first real weather → snap the sky
 }
 function renderWeatherText() {
   if (!W) return;
+  if (W.temp != null) $('temp').textContent = Math.round(W.temp) + '°';
   $('hi').textContent = Math.round(W.hi) + '°';
   $('lo').textContent = Math.round(W.lo) + '°';
 }
@@ -904,50 +915,93 @@ function updateArc() {
   $('moonName').innerHTML = `${moonPhaseName(moonPhase)}<small>${Math.round(moonFrac * 100)}%</small>`;
 }
 
-/* ───────────── L train (MTA realtime feed, via the MTAPI JSON proxy at wheresthefuckingtrain.com) ─────────────
-   Nearest L stop to 1202 Decatur St is Wilson Av (about 4 minutes on foot).
-   Trip to 6 Av = walk to the platform + wait for the first train you can make + scheduled ride.
-   Preview without the network: index.html?l=4,11,19  (minutes until the next Manhattan-bound trains) */
+/* ───────────── L train (MTA GTFS-realtime feed, read directly in the browser) ─────────────
+   The MTA publishes the L line as a GTFS-realtime protobuf at the URL below, no API key,
+   served with open CORS — so the page can read it directly with no proxy. We decode just the
+   arrival times for our stop with a tiny inline protobuf reader (below).
+   Nearest L stop to 1202 Decatur St is Wilson Av (about 4 min on foot). Manhattan-bound
+   platforms carry the "N" suffix in the feed, so Wilson Av Manhattan-bound is stop L20N.
+   Preview without the network: index.html?l=4,11,19  (minutes to the next trains) */
 const TRANSIT = {
-  api: 'https://api.wheresthefuckingtrain.com',
-  station: { lat: 40.68876, lon: -73.90405, match: /wilson/i },   // used to pick the station from the nearest-5 lookup
-  walkMin: 4,                                                       // door → Manhattan-bound platform
-  rideMin: 30,                                                      // Wilson Av → 6 Av, scheduled
+  feed: 'https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l',
+  proxy: 'https://api.wheresthefuckingtrain.com/by-id/L20',   // JSON fallback if the direct feed ever refuses
+  stopN: 'L20N',                                              // Wilson Av, Manhattan-bound
+  stationName: 'Wilson Av',
+  walkMin: 4,                                                 // door → Manhattan-bound platform
+  rideMin: 30,                                                // Wilson Av → 6 Av, scheduled
   refreshSec: 30,
 };
+
+/* decode a GTFS-realtime FeedMessage, returning [{route, time(ms)}] for one stop id */
+function decodeArrivals(buf, wantStop) {
+  let p = 0; const n = buf.length, out = [], td = new TextDecoder();
+  const vint = () => { let s = 1, v = 0, b; do { b = buf[p++]; v += (b & 127) * s; s *= 128; } while (b & 128); return v; };
+  const rstr = () => { const l = vint(), x = td.decode(buf.subarray(p, p + l)); p += l; return x; };
+  const skip = w => { if (w === 0) vint(); else if (w === 2) { p += vint(); } else if (w === 1) p += 8; else if (w === 5) p += 4; };
+  const walk = (end, cb) => { while (p < end) { const t = vint(), f = t >> 3, w = t & 7; if (!cb(f, w)) skip(w); } };
+  const event = end => { let t = 0; walk(end, (f, w) => { if (f === 2 && w === 0) { t = vint(); return true; } return false; }); return t; };
+  const stu = end => { let stop = null, arr = 0, dep = 0; walk(end, (f, w) => {
+    if (f === 4 && w === 2) { stop = rstr(); return true; }
+    if (f === 2 && w === 2) { const l = vint(); arr = event(p + l); return true; }
+    if (f === 3 && w === 2) { const l = vint(); dep = event(p + l); return true; }
+    return false; }); return { stop, time: arr || dep }; };
+  const trip = end => { let r = null; walk(end, (f, w) => { if (f === 5 && w === 2) { r = rstr(); return true; } return false; }); return r; };
+  const tu = end => { let route = null; const stus = []; walk(end, (f, w) => {
+    if (f === 1 && w === 2) { const l = vint(); route = trip(p + l); return true; }
+    if (f === 2 && w === 2) { const l = vint(); stus.push(stu(p + l)); return true; }
+    return false; });
+    for (const x of stus) if (x.stop === wantStop && x.time) out.push({ route, time: x.time * 1000 }); };
+  const entity = end => walk(end, (f, w) => { if (f === 3 && w === 2) { const l = vint(); tu(p + l); return true; } return false; });
+  walk(n, (f, w) => { if (f === 2 && w === 2) { const l = vint(); entity(p + l); return true; } return false; });
+  return out;
+}
+
 let transitTimer = 0;
 async function loadTransit() {
   clearTimeout(transitTimer);
+  if (P.has('l')) {                                          // offline preview
+    const base = now();
+    renderTransit(P.get('l').split(',').map(m => base + (+m) * 60e3), base, true);
+    transitTimer = setTimeout(loadTransit, 30e3);
+    return;
+  }
   const nowReal = Date.now();
-  let times = null, ok = false;
-  if (P.has('l')) { const base = now(); times = P.get('l').split(',').map(m => base + (+m) * 60e3); ok = true; renderTransit(times, base, true); transitTimer = setTimeout(loadTransit, 30e3); return; }
-  else try {
+  let times = null;
+  // primary: the MTA protobuf feed, decoded on-device
+  try {
     const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 12000);
-    const r = await fetch(`${TRANSIT.api}/by-location?lat=${TRANSIT.station.lat}&lon=${TRANSIT.station.lon}`, { signal: ctl.signal, cache: 'no-store' });
+    const r = await fetch(TRANSIT.feed, { signal: ctl.signal, cache: 'no-store' });
     clearTimeout(to);
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json(), list = j.data || [];
-    const st = list.find(x => TRANSIT.station.match.test(x.name || '') && (x.routes || []).includes('L'))
-            || list.find(x => (x.routes || []).includes('L'));
-    if (!st) throw new Error('no L station in response');
-    $('tStation').textContent = st.name;
-    times = (st.N || []).filter(a => a.route === 'L').map(a => Date.parse(a.time))   // N = Manhattan-bound on the L
+    const buf = new Uint8Array(await r.arrayBuffer());
+    times = decodeArrivals(buf, TRANSIT.stopN).map(a => a.time)
       .filter(t => t > nowReal - 45e3).sort((a, b) => a - b);
-    ok = true;
-  } catch (err) { console.warn('L train fetch failed, retrying in 1 min:', err); }
-  renderTransit(times, nowReal, ok);
-  transitTimer = setTimeout(loadTransit, ok ? TRANSIT.refreshSec * 1000 : 60e3);
+  } catch (err) {
+    console.warn('Direct MTA feed failed, trying JSON proxy:', err);
+    // fallback: the wheresthefuckingtrain JSON proxy
+    try {
+      const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 12000);
+      const r = await fetch(TRANSIT.proxy, { signal: ctl.signal, cache: 'no-store' });
+      clearTimeout(to);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json(), st = (j.data || [])[0];
+      if (st) times = (st.N || []).filter(a => a.route === 'L').map(a => Date.parse(a.time))
+        .filter(t => t > nowReal - 45e3).sort((a, b) => a - b);
+    } catch (err2) { console.warn('L train proxy also failed:', err2); }
+  }
+  renderTransit(times, nowReal, times != null);
+  transitTimer = setTimeout(loadTransit, times != null ? TRANSIT.refreshSec * 1000 : 60e3);
 }
 function renderTransit(times, nowReal, ok) {
   const el = $('transit');
+  $('tStation').textContent = TRANSIT.stationName;
   if (!ok || !times) { el.classList.add('off'); $('tTimes').innerHTML = '<b>Train times unavailable</b>'; $('tripMin').textContent = '—'; $('tripSub').textContent = ''; return; }
   el.classList.remove('off');
   const mins = times.slice(0, 3).map(t => Math.max(0, Math.round((t - nowReal) / 60e3)));
   $('tTimes').innerHTML = mins.length
     ? mins.map(m => `<b>${m === 0 ? 'Now' : m}</b>`).join('') + '<i>min</i>'
     : '<b>No trains listed</b>';
-
-  const canMake = times.find(t => t >= nowReal + TRANSIT.walkMin * 60e3 - 45e3);   // 45 s of grace at the turnstile
+  const canMake = times.find(t => t >= nowReal + TRANSIT.walkMin * 60e3 - 45e3);   // 45 s grace at the turnstile
   if (!canMake) { $('tripMin').textContent = '—'; $('tripSub').textContent = mins.length ? 'Next train is too soon to catch' : ''; return; }
   const arrive = canMake + TRANSIT.rideMin * 60e3;
   $('tripMin').textContent = Math.round((arrive - nowReal) / 60e3) + ' min';
